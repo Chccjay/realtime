@@ -2,30 +2,31 @@ package com.xinwu.realtime.dim.app;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
+import com.mysql.cj.jdbc.JdbcConnection;
 import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 import com.xinwu.realtime.base.BaseApp;
 import com.xinwu.realtime.bean.TableProcessDim;
 import com.xinwu.realtime.constant.Constant;
+import com.xinwu.realtime.dim.function.DimBroadcastFunction;
+import com.xinwu.realtime.dim.function.DimHbaseSinkFunction;
 import com.xinwu.realtime.util.FlinkSourceUtil;
 import com.xinwu.realtime.util.HBaseUtil;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.FlatMapFunction;
+import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.RichFlatMapFunction;
-import org.apache.flink.api.common.state.BroadcastState;
 import org.apache.flink.api.common.state.MapStateDescriptor;
-import org.apache.flink.api.common.state.ReadOnlyBroadcastState;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.streaming.api.datastream.BroadcastConnectedStream;
-import org.apache.flink.streaming.api.datastream.BroadcastStream;
-import org.apache.flink.streaming.api.datastream.DataStreamSource;
-import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
+import org.apache.flink.streaming.api.datastream.*;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.co.BroadcastProcessFunction;
+import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 import org.apache.flink.util.Collector;
 import org.apache.hadoop.hbase.client.Connection;
-import reactor.util.function.Tuple2;
 
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.List;
 
 public class DimApp extends BaseApp {
     public static void main(String[] args) {
@@ -82,6 +83,7 @@ public class DimApp extends BaseApp {
         // 2.使用flinkcdc读取监控配置表数据
         MySqlSource<String> mySqlSource = FlinkSourceUtil.getMySqlSource(Constant.PROCESS_DATABASE, Constant.PROCESS_DIM_TBALE_NAME);
         DataStreamSource<String> mysql_source = env.fromSource(mySqlSource, WatermarkStrategy.noWatermarks(), "mysql_source").setParallelism(1);
+
         //设置为1，不然变动数据抓取没有那么灵敏
         //mysql_source.print();
         // 3 在Hbase中创建维表
@@ -153,52 +155,34 @@ public class DimApp extends BaseApp {
                 }
 
             }
-        });
+        }).setParallelism(1);
 
         // 3.做成广播流
         // 广播状态的key用于判断是否是维度表，value用于补充信息到Hbase
         MapStateDescriptor<String, TableProcessDim> broadcast_state = new MapStateDescriptor<>("broadcast_state", String.class, TableProcessDim.class);
-
         BroadcastStream<TableProcessDim> broadcastStateStream = createTbaleStream.broadcast(broadcast_state);
-
 
         // 4.连接主流和广播流
         BroadcastConnectedStream<JSONObject, TableProcessDim> connectStream = jsonObjStream.connect(broadcastStateStream);
-        
-        connectStream.process(new BroadcastProcessFunction<JSONObject, TableProcessDim, Tuple2<JSONObject,TableProcessDim>>() {
-
-
+        SingleOutputStreamOperator<Tuple2<JSONObject, TableProcessDim>> dimStrem = connectStream.process(new DimBroadcastFunction(broadcast_state)).setParallelism(1);
+        // 5.筛选出要写出的字段
+        SingleOutputStreamOperator<Tuple2<JSONObject, TableProcessDim>> filterColumnStream = dimStrem.map(new MapFunction<Tuple2<JSONObject, TableProcessDim>, Tuple2<JSONObject, TableProcessDim>>() {
             @Override
-            public void processBroadcastElement(TableProcessDim value, BroadcastProcessFunction<JSONObject, TableProcessDim,
-                    Tuple2<JSONObject, TableProcessDim>>.Context context, Collector<Tuple2<JSONObject, TableProcessDim>> collector) throws Exception {
-                BroadcastState<String, TableProcessDim> tableProcessState = context.getBroadcastState(broadcast_state);
-                String op = value.getOp();
-                if("d".equals(op)){
-                    tableProcessState.remove(value.getSinkTable());
-                }else {
-                    tableProcessState.put(value.getSourceTable(),value);
-                }
+            public Tuple2<JSONObject, TableProcessDim> map(Tuple2<JSONObject, TableProcessDim> value) throws Exception {
+                JSONObject jsonObj = value.f0;
+                TableProcessDim dim = value.f1;
 
-            }
+                String sinkColumns = dim.getSinkColumns();
+                List<String> columns = Arrays.asList(sinkColumns.split(","));
+                JSONObject data = jsonObj.getJSONObject("data");
+                data.keySet().removeIf(key -> !columns.contains(key));// 不包含的删掉
 
-            @Override
-            public void processElement(JSONObject value, BroadcastProcessFunction<JSONObject, TableProcessDim, Tuple2<JSONObject, TableProcessDim>>.
-                    ReadOnlyContext ctx, Collector<Tuple2<JSONObject, TableProcessDim>> collector) throws Exception {
-                //读取广播状态
-                ReadOnlyBroadcastState<String, TableProcessDim> tableProcessState = ctx.getBroadcastState(broadcast_state);
-                // 查询广播状态 判断当前的数据对应的表格是否在状态里
-                String tableName = value.getString("table");
-                tableProcessState.get(tableName);
-                if(tableName!=null){
-                    //状态不为null说明当前数据是维度表数据
-                    collector.collect(Tuple2.of(value,TableProcessDim));
-                }
-
-
+                return value;
             }
         });
-        // 7.筛选出要写出的字段
-        // 8.写出到Hbase
+
+        // 6.写出到Hbase
+        DataStreamSink<Tuple2<JSONObject, TableProcessDim>> tuple2DataStreamSink = filterColumnStream.addSink(new DimHbaseSinkFunction());
 
     }
 }
