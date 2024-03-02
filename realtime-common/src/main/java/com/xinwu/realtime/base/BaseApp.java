@@ -64,6 +64,6 @@ public abstract class BaseApp {
 
     }
 
-    public abstract void handle(StreamExecutionEnvironment env,DataStreamSource<String> kafakSource);
+    public abstract void handle(StreamExecutionEnvironment env,DataStreamSource<String> stream);
 
 }

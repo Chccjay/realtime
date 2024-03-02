@@ -20,7 +20,6 @@ import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.datastream.*;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 import org.apache.flink.util.Collector;
 import org.apache.hadoop.hbase.client.Connection;
 
@@ -60,7 +59,7 @@ public class DimApp extends BaseApp {
         //                   return flat;
         //               }
         //           }).map(JSONObject::parseObject);
-        SingleOutputStreamOperator<JSONObject> jsonObjStream = stream.flatMap(new FlatMapFunction<String, JSONObject>() {
+        SingleOutputStreamOperator<JSONObject> jsonObjStream = stream.flatMap(new FlatMapFunction<String, JSONObject>() {//过滤非指定库数据
 
             @Override
             public void flatMap(String s, Collector<JSONObject> collector) throws Exception {
@@ -82,11 +81,11 @@ public class DimApp extends BaseApp {
         // kafkaSource.print();
         // 2.使用flinkcdc读取监控配置表数据
         MySqlSource<String> mySqlSource = FlinkSourceUtil.getMySqlSource(Constant.PROCESS_DATABASE, Constant.PROCESS_DIM_TBALE_NAME);
-        DataStreamSource<String> mysql_source = env.fromSource(mySqlSource, WatermarkStrategy.noWatermarks(), "mysql_source").setParallelism(1);
+        DataStreamSource<String> mysql_source = env.fromSource(mySqlSource, WatermarkStrategy.noWatermarks(), "mysql_source").setParallelism(1);//注意这里并行读设置为1 否知只能读取到r操作的数据 cud操作都无法读取到数据
 
         //设置为1，不然变动数据抓取没有那么灵敏
         //mysql_source.print();
-        // 3 在Hbase中创建维表
+        // 3 在Hbase中创建维表 这里需要用到richFlatMapFunction是为了拥有open和close方法来管理 hbase连接的生命周期(不能一直连这，有数据过来就打开处理完就关掉，事件驱动 open和close方法)
         SingleOutputStreamOperator<TableProcessDim> createTbaleStream = mysql_source.flatMap(new RichFlatMapFunction<String, TableProcessDim>() {
 
             public Connection connection;
@@ -112,12 +111,11 @@ public class DimApp extends BaseApp {
                     String op = jsonObject.getString("op");
                     TableProcessDim dim;
                     if ("d".equals(op)) {
-                        dim = jsonObject.getObject("before", TableProcessDim.class);
+                        dim = jsonObject.getObject("before", TableProcessDim.class);//这种方式可以直接将json的数据指定返回javabean的对象
                         //当配置表发送一个D类型的操作 对应的Hbase需要删除一张表
                         deleteTable(dim);
                     } else if ("c".equals(op) || "r".equals(op)) {
                         dim = jsonObject.getObject("after", TableProcessDim.class);
-                        //当配置表发送一个D类型的操作 对应的Hbase需要删除一张表
                         createTable(dim);
                     } else {
                         dim = jsonObject.getObject("after", TableProcessDim.class);
@@ -133,7 +131,7 @@ public class DimApp extends BaseApp {
 
             }
 
-            private void deleteTable(TableProcessDim dim) {
+            private void createTable(TableProcessDim dim) {
 
                 String sinkFamily = dim.getSinkFamily();
                 String[] splits = sinkFamily.split(",");
@@ -146,7 +144,7 @@ public class DimApp extends BaseApp {
 
             }
 
-            private void createTable(TableProcessDim dim) {
+            private void deleteTable(TableProcessDim dim) {
 
                 try {
                     HBaseUtil.dropTable(connection, Constant.HBASE_NAMESPACE, dim.getSinkTable());
@@ -166,7 +164,8 @@ public class DimApp extends BaseApp {
         BroadcastConnectedStream<JSONObject, TableProcessDim> connectStream = jsonObjStream.connect(broadcastStateStream);
         SingleOutputStreamOperator<Tuple2<JSONObject, TableProcessDim>> dimStrem = connectStream.process(new DimBroadcastFunction(broadcast_state)).setParallelism(1);
         // 5.筛选出要写出的字段
-        SingleOutputStreamOperator<Tuple2<JSONObject, TableProcessDim>> filterColumnStream = dimStrem.map(new MapFunction<Tuple2<JSONObject, TableProcessDim>, Tuple2<JSONObject, TableProcessDim>>() {
+        SingleOutputStreamOperator<Tuple2<JSONObject, TableProcessDim>> filterColumnStream = dimStrem.map(
+                new MapFunction<Tuple2<JSONObject, TableProcessDim>, Tuple2<JSONObject, TableProcessDim>>() {
             @Override
             public Tuple2<JSONObject, TableProcessDim> map(Tuple2<JSONObject, TableProcessDim> value) throws Exception {
                 JSONObject jsonObj = value.f0;

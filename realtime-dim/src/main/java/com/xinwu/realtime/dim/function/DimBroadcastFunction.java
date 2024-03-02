@@ -42,6 +42,7 @@ public class DimBroadcastFunction extends BroadcastProcessFunction<JSONObject,Ta
     @Override
     public void processBroadcastElement(TableProcessDim value, BroadcastProcessFunction<JSONObject, TableProcessDim,
             Tuple2<JSONObject, TableProcessDim>>.Context context, Collector<Tuple2<JSONObject, TableProcessDim>> collector) throws Exception {
+
         BroadcastState<String, TableProcessDim> tableProcessState = context.getBroadcastState(broadcast_state);
         String op = value.getOp();
         if ("d".equals(op)) {
@@ -49,6 +50,7 @@ public class DimBroadcastFunction extends BroadcastProcessFunction<JSONObject,Ta
             //同步删除hashMap中初始化加载的配置表信息
             hashMap.remove(value.getSourceTable());//***********
         } else {
+            //将
             tableProcessState.put(value.getSourceTable(), value);
         }
 
