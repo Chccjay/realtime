@@ -3,11 +3,15 @@ import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 
+import java.time.Duration;
+
 public class Test03 {
     public static void main(String[] args) {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(4);
         StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
+
+        tableEnv.getConfig().setIdleStateRetention(Duration.ofSeconds(10L));//不设置状态会一直存在
         tableEnv.executeSql("create table topic_db(\n" +
                 "\t`database` STRING,\n" +
                 "\t`table` STRING,\n" +
