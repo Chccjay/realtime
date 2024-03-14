@@ -35,6 +35,7 @@ public class Constant {
     public static final String TOPIC_DWD_TRADE_CARD_ADD = "";
     public static final String TOPIC_DWD_TRADE_ORDER_DETAIL = "";
     public static final String TOPIC_DWD_TRADE_ORDER_CANCEL = "";
+    public static final String TOPIC_DWD_TRADE_ORDER_PAMENT_SUCCESS = "";
 
 
 

@@ -17,13 +17,15 @@ public class SQLUtil {
     }
 
     public static String getKafkaTopicDb(String groupId) {
-        return "create table KafkaTable(\n" +
+        return "create table topic_db(\n" +
                 "\t`database` STRING,\n" +
                 "\t`table` STRING,\n" +
-                "\t`ts`\tbigint,\n" +
                 "\t`data` map<STRING,STRING>,\n" +
                 "\t`old` map<STRING,STRING>,\n" +
                 "\t`proc_time` as PROCTIME()\n" +
+                "\t`ts`\tbigint,\n" +
+                "\trow_time as TO_TIMESTAMP_LTZ(ts*1000,3),\n" +
+                "\t WATERMARK FOR order_time AS order_time -INTERVAL '15' SECOND\n" +
                 ")\n" + getKafkaSourceSQL(Constant.TOPIC_DB, groupId);
 
     }
